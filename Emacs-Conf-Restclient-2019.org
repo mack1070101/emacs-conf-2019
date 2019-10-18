@@ -1,0 +1,162 @@
+#+TITLE: Emacs Conf 2019: Restclient for API Documentation and Testing
+#+OPTIONS: num:nil tags:nil toc:nil
+#+TAGS: :emacs:
+#+STARTUP: overview
+* Background
+The beauty of using org-mode to replace a dedicated application is that it
+becomes more scriptable, and it's programming language agnostic, so you can use
+the best language to accomplish whatever task needs to be done.
+
+I tend to favor elisp for doing simple things like building strings as it's
+highly integrated into emacs, and helps to limit the scope of supported
+languages.
+** Required Packages
+This example uses [[https://github.com/pashky/restclient.el][restclient.el]] (A DSL for working with RESTful APIs) and
+[[https://github.com/alf/ob-restclient.el][ob-restclient]] (to provide the wrappers for org-mode). However, these are just
+what I use. The principles I demo here can be used with any set of programming
+languages that support network calls.
+** Benefits
+- Incentive to use Emacs and all the tooling it supports
+- Helps support maintenance of documentation as it is actually used to interact
+  with APIs
+- Full org-mode support for task management within the documentation
+- Exportable to other formats for distribution
+- Useful for building scripts via tangling
+- Support complex testing of API interactions by feeding the output of one
+  request into a subsequent request
+* Running the Mock Server
+See [[file:README.md][README.md]]. I have provided an extremely simple server to test against. It
+can be run using ~lein ring server~
+* Stock Application
+:PROPERTIES:
+:header-args: :var localhost="http://localhost:3000" dev="https://dev-server.com" staging="https://staging-stock-app.com" production="https://stock-app.com" api-version="/api"
+:header-args:elisp: :cache yes :results silent
+:END:
+Here we see documentation and code that is generic to the application. We will
+heavily rely on named code blocks and header arguments to share state inside
+this document.
+
+I organize the document in the typical org-mode "outline" style, where each
+header is a slash separated path.
+** Some Generic Functionality                                     :noexport:
+We can prevent the export of sensitive information by adding a ~noexport~ to a
+heading. This helps keep documentation generated from this document clean.
+
+I've disabled "confirm-evaluate" because as we nest code blocks, it becomes
+excessive to continually respond "y" many times to execute a request.
+#+name: disable-confirm-eval
+#+BEGIN_SRC elisp
+  (setq org-babel-confirm-evaluate nil)
+#+END_SRC
+
+We'll use this code block to help build our API paths in the most reusable way possible.
+#+name: get-url
+#+BEGIN_SRC elisp
+  (print localhost)
+#+END_SRC
+** ~/oauth/token~
+In this case we will hide code that we use for generating the ~oauth/token~
+requests based on what environment we're testing in.
+This actually fetches the Oauth token from our server, and parses out the access
+token using [[https://stedolan.github.io/jq/][jq]]. This provides an example of how it is possible to support many
+programming languages inside the same document.
+
+#+name: get-oauth-token
+#+BEGIN_SRC bash :var url=get-url() login_string=get-login-string() secret=get-secret() :tangle auth.sh :results silent
+  curl -v -X POST "$url/oauth/token" \
+       -u "ios-native:$secret" \
+       --data "grant_type=password$login_string" | jq '.access_token'
+#+END_SRC
+*** Utilities                                                    :noexport:
+#+name: get-login-string
+#+BEGIN_SRC elisp :var url=get-url() :exports none
+  (if (or (string= url staging) (string= url production))
+      (print "&username=test-user@test.com&password=Password")
+    (print "&username=fake-user@test.com&password=password"))
+#+END_SRC
+
+#+name: get-secret
+#+BEGIN_SRC elisp :var url=get-url() :exports none
+  (if (or (string= url staging) (string= url production))
+      (print "client-secret-here")
+    (print ""))
+#+END_SRC
+
+** ~/api~
+:PROPERTIES:
+:header-args:restclient: :var url=get-api-url()
+:END:
+Use header arguments here to help keep code blocks simple.
+
+#+name: get-api-url
+#+BEGIN_SRC elisp :eval without-query :var url=get-url()
+  (print (concat url api-version ))
+#+END_SRC
+*** ~/trade~
+:PROPERTIES:
+:header-args:restclient: :var url=get-api-url() stock-symbol="APPL" token=get-oauth-token()
+:END:
+Endpoints used for trading stocks and options. Requires an Oauth token. All
+orders sent to these endpoints are executed immediately. Orders sent outside of
+market hours will be executed immediately when markets open.
+**** ~/stocks~
+***** ~/buy~
+Purchases a stock identified by it's stock symbol, in a given amount.
+#+BEGIN_SRC restclient
+  POST :url/stocks/buy
+  Authorization Basic: :token
+  Content-Type: application/json
+  {
+  "symbol": stock-symbol,
+  "amount": 3
+  }
+#+END_SRC
+
+***** ~/sell~
+Sell a stock identified by it's stock symbol, in a given amount. If the
+user has insufficient stock to fulfill the order, it will be rejected.
+#+BEGIN_SRC restclient
+  POST :url/stocks/sell
+  Authorization: Bearer :token
+  Content-Type: application/json
+
+  {
+  "symbol": :stock-symbol,
+  "amount": 1
+  }
+#+END_SRC
+
+**** ~/options~
+Endpoints used for trading options. Requires an Oauth token. All orders sent to
+these endpoints are executed immediately. Orders sent outside of market hours
+will be executed immediately when markets open.
+***** ~/buy~
+Purchases a 
+#+BEGIN_SRC restclient :var action="BUY"
+  POST :url/options/put
+  Authorization: Bearer :token
+  Content-Type: application/json
+
+  {
+  "symbol": :stock-symbol,
+  "amount": 3,
+  "action": :action
+  }
+#+END_SRC
+
+***** ~/sell~
+#+BEGIN_SRC restclient :var action="SELL"
+  POST :url/options/call
+  Authorization: Bearer :token
+  Content-Type: application/json
+
+  {
+  "symbol": :stock-symbol,
+  "amount": 1,
+  "action": :action
+
+  }
+#+END_SRC
+
+*** TODO ~/quote~
+Let's look at what it takes to implement a new endpoint.
